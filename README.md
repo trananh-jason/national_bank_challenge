@@ -24,6 +24,18 @@ uv sync
 uv run python main.py
 ```
 
+### Optional: Enable OpenAI-powered coaching
+The app now includes an AI coaching endpoint at `/api/ai/coach`.
+
+- If `OPENAI_API_KEY` is set, the backend uses OpenAI for structured coaching output.
+- If no API key is present, it falls back to a local heuristic model so the feature still works.
+
+```bash
+export OPENAI_API_KEY="your_api_key_here"
+# Optional override (default: gpt-4.1-mini)
+export OPENAI_MODEL="gpt-4.1-mini"
+```
+
 ### 4. Set up and run the frontend
 ```bash
 cd frontend
