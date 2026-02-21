@@ -48,10 +48,65 @@ interface InsightTile {
 }
 
 const PAGE_SIZE = 1000;
+const MAX_NUMERIC_LENGTH = 7;
 
 const toNumber = (value: unknown): number => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const formatScaled = (
+  value: number,
+  divisor: number,
+  suffix: string,
+  maxLength: number,
+): string => {
+  for (let precision = 2; precision >= 0; precision -= 1) {
+    const scaled = (value / divisor).toFixed(precision).replace(/\.?0+$/, "");
+    const candidate = `${scaled}${suffix}`;
+    if (candidate.length <= maxLength) {
+      return candidate;
+    }
+  }
+
+  return `${(value / divisor).toExponential(1).replace("+", "")}${suffix}`;
+};
+
+const condenseDisplayNumber = (value: number, decimals = 2, maxLength = MAX_NUMERIC_LENGTH): string => {
+  if (!Number.isFinite(value)) {
+    return "Infinity";
+  }
+
+  const plain = value.toLocaleString("en-US", {
+    useGrouping: false,
+    maximumFractionDigits: decimals,
+  });
+  if (plain.length <= maxLength) {
+    return plain;
+  }
+
+  const abs = Math.abs(value);
+  const sign = value < 0 ? "-" : "";
+  const signedLimit = Math.max(1, maxLength - sign.length);
+
+  if (abs >= 1_000_000_000) {
+    return `${sign}${formatScaled(abs, 1_000_000_000, "B", signedLimit)}`;
+  }
+
+  if (abs >= 1_000_000) {
+    return `${sign}${formatScaled(abs, 1_000_000, "M", signedLimit)}`;
+  }
+
+  if (abs >= 1_000) {
+    return `${sign}${formatScaled(abs, 1_000, "K", signedLimit)}`;
+  }
+
+  const scientific = value.toExponential(2).replace("+", "");
+  if (scientific.length <= maxLength) {
+    return scientific;
+  }
+
+  return value.toExponential(1).replace("+", "");
 };
 
 const parseTrades = (rows: Array<Record<string, unknown>>): TradeRow[] =>
@@ -153,7 +208,7 @@ const buildBehavioralInsights = (trades: TradeRow[], metrics: Metrics): InsightT
   const dispositionTile: InsightTile = {
     title: "Disposition Effect",
     severity: dispositionSeverity,
-    trend: `${lossToWinRatio.toFixed(2)}x loss-to-win size ratio`,
+    trend: `${condenseDisplayNumber(lossToWinRatio, 2)}x loss-to-win size ratio`,
     description:
       dispositionSeverity === "low"
         ? "Losses are controlled relative to gains."
@@ -174,7 +229,7 @@ const buildBehavioralInsights = (trades: TradeRow[], metrics: Metrics): InsightT
   const paceTile: InsightTile = {
     title: "Trading Pace",
     severity: paceSeverity,
-    trend: `${tradesPerDay.toFixed(1)} trades per active day`,
+    trend: `${condenseDisplayNumber(tradesPerDay, 1)} trades per active day`,
     description:
       paceSeverity === "low"
         ? "Pacing appears stable and selective."
@@ -201,7 +256,7 @@ const buildBehavioralInsights = (trades: TradeRow[], metrics: Metrics): InsightT
   const recencyTile: InsightTile = {
     title: "Recency Bias Trend",
     severity: recencySeverity,
-    trend: `Recent avg P/L ${momentumDelta >= 0 ? "up" : "down"} ${Math.abs(momentumDelta).toFixed(2)} per trade`,
+    trend: `Recent avg P/L ${momentumDelta >= 0 ? "up" : "down"} ${condenseDisplayNumber(Math.abs(momentumDelta), 2)} per trade`,
     description:
       recencySeverity === "low"
         ? "Recent decisions are improving or stable versus earlier trades."
@@ -215,7 +270,7 @@ const buildBehavioralInsights = (trades: TradeRow[], metrics: Metrics): InsightT
   const drawdownTile: InsightTile = {
     title: "Drawdown Control",
     severity: drawdownSeverity,
-    trend: `Max drawdown ${maxDrawdown.toFixed(1)}%`,
+    trend: `Max drawdown ${condenseDisplayNumber(maxDrawdown, 1)}%`,
     description:
       drawdownSeverity === "low"
         ? "Equity swings are controlled."
@@ -352,7 +407,9 @@ export default function App() {
                   <CardHeader className="pb-2">
                     <CardTitle className="text-sm text-gray-500">Win Rate</CardTitle>
                   </CardHeader>
-                  <CardContent className="text-2xl font-semibold">{metrics.winRate.toFixed(1)}%</CardContent>
+                  <CardContent className="text-2xl font-semibold">
+                    {condenseDisplayNumber(metrics.winRate, 1)}%
+                  </CardContent>
                 </Card>
 
                 <Card>
@@ -360,7 +417,7 @@ export default function App() {
                     <CardTitle className="text-sm text-gray-500">Avg Profit</CardTitle>
                   </CardHeader>
                   <CardContent className="text-2xl font-semibold text-green-600">
-                    ${metrics.avgProfit.toFixed(2)}
+                    ${condenseDisplayNumber(metrics.avgProfit, 2)}
                   </CardContent>
                 </Card>
 
@@ -369,7 +426,7 @@ export default function App() {
                     <CardTitle className="text-sm text-gray-500">Avg Loss</CardTitle>
                   </CardHeader>
                   <CardContent className="text-2xl font-semibold text-red-600">
-                    ${metrics.avgLoss.toFixed(2)}
+                    ${condenseDisplayNumber(metrics.avgLoss, 2)}
                   </CardContent>
                 </Card>
 
@@ -378,7 +435,7 @@ export default function App() {
                     <CardTitle className="text-sm text-gray-500">Point Factor</CardTitle>
                   </CardHeader>
                   <CardContent className="text-2xl font-semibold">
-                    {Number.isFinite(metrics.pointFactor) ? metrics.pointFactor.toFixed(2) : "Infinity"}
+                    {condenseDisplayNumber(metrics.pointFactor, 2)}
                   </CardContent>
                 </Card>
 
@@ -389,7 +446,7 @@ export default function App() {
                   <CardContent
                     className={`text-2xl font-semibold ${metrics.profitLoss >= 0 ? "text-green-600" : "text-red-600"}`}
                   >
-                    ${metrics.profitLoss.toFixed(2)}
+                    ${condenseDisplayNumber(metrics.profitLoss, 2)}
                   </CardContent>
                 </Card>
 
@@ -398,7 +455,7 @@ export default function App() {
                     <CardTitle className="text-sm text-gray-500">Current Balance</CardTitle>
                   </CardHeader>
                   <CardContent className="text-2xl font-semibold">
-                    {metrics.currentBalance === null ? "-" : `$${metrics.currentBalance.toFixed(2)}`}
+                    {metrics.currentBalance === null ? "-" : `$${condenseDisplayNumber(metrics.currentBalance, 2)}`}
                   </CardContent>
                 </Card>
               </div>
@@ -445,7 +502,7 @@ export default function App() {
                         />
                         <YAxis tick={{ fontSize: 12 }} domain={[yDomain[0], yDomain[1]]} />
                         <Tooltip
-                          formatter={(value: number) => [`$${Number(value).toFixed(2)}`, "Balance"]}
+                          formatter={(value: number) => [`$${condenseDisplayNumber(Number(value), 2)}`, "Balance"]}
                           labelFormatter={(label) => {
                             const point = balanceSeries.find((item) => item.index === Number(label));
                             return point ? point.label : `Trade ${label}`;
