@@ -47,6 +47,12 @@ interface InsightTile {
   description: string;
 }
 
+interface BalancePoint {
+  label: string;
+  index: number;
+  balance: number;
+}
+
 const MAX_NUMERIC_LENGTH = 7;
 const MAX_CHART_POINTS = 2000;
 
@@ -313,17 +319,24 @@ export default function App() {
   const metrics = useMemo(() => calculateMetrics(trades), [trades]);
   const insightTiles = useMemo(() => buildBehavioralInsights(trades, metrics), [trades, metrics]);
 
-  const balanceSeries = useMemo(
-    () =>
-      trades
-        .filter((trade) => trade.balance !== null)
-        .map((trade, index) => ({
-          label: trade.timestamp,
-          index: index + 1,
-          balance: trade.balance as number,
-        })),
-    [trades],
-  );
+  const balanceSeries = useMemo(() => {
+    const series: BalancePoint[] = [];
+
+    for (let tradeIdx = 0; tradeIdx < trades.length; tradeIdx += 1) {
+      const trade = trades[tradeIdx];
+      if (trade.balance === null) {
+        continue;
+      }
+
+      series.push({
+        label: trade.timestamp,
+        index: tradeIdx + 1,
+        balance: trade.balance,
+      });
+    }
+
+    return series;
+  }, [trades]);
 
   const chartSeries = useMemo(
     () => downsampleSeries(balanceSeries, MAX_CHART_POINTS),
@@ -331,13 +344,13 @@ export default function App() {
   );
 
   const yDomain = useMemo(() => {
-    if (chartSeries.length === 0) {
+    if (balanceSeries.length === 0) {
       return [0, 1] as const;
     }
 
     let min = Number.POSITIVE_INFINITY;
     let max = Number.NEGATIVE_INFINITY;
-    for (const point of chartSeries) {
+    for (const point of balanceSeries) {
       if (point.balance < min) {
         min = point.balance;
       }
@@ -346,9 +359,10 @@ export default function App() {
       }
     }
 
-    const padding = Math.max((max - min) * 0.08, 50);
-    return [Math.max(0, min - padding), max + padding] as const;
-  }, [chartSeries]);
+    const range = max - min;
+    const padding = Math.max(range * 0.08, Math.max(Math.abs(max), Math.abs(min), 1) * 0.02, 1);
+    return [min - padding, max + padding] as const;
+  }, [balanceSeries]);
 
   const chartLabelByIndex = useMemo(
     () => new Map(chartSeries.map((point) => [point.index, point.label])),
@@ -519,11 +533,19 @@ export default function App() {
                       <LineChart data={chartSeries}>
                         <CartesianGrid strokeDasharray="3 3" />
                         <XAxis
+                          type="number"
                           dataKey="index"
+                          domain={["dataMin", "dataMax"]}
+                          allowDecimals={false}
+                          tickCount={8}
                           tick={{ fontSize: 12 }}
                           label={{ value: "Trades", position: "insideBottom", offset: -5 }}
                         />
-                        <YAxis tick={{ fontSize: 12 }} domain={[yDomain[0], yDomain[1]]} />
+                        <YAxis
+                          tick={{ fontSize: 12 }}
+                          domain={[yDomain[0], yDomain[1]]}
+                          tickFormatter={(value: number) => `$${condenseDisplayNumber(Number(value), 2)}`}
+                        />
                         <Tooltip
                           formatter={(value: number) => [`$${condenseDisplayNumber(Number(value), 2)}`, "Balance"]}
                           labelFormatter={(label) => {
