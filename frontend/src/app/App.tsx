@@ -47,8 +47,8 @@ interface InsightTile {
   description: string;
 }
 
-const PAGE_SIZE = 1000;
 const MAX_NUMERIC_LENGTH = 7;
+const MAX_CHART_POINTS = 2000;
 
 const toNumber = (value: unknown): number => {
   const parsed = Number(value);
@@ -125,23 +125,33 @@ const parseTrades = (rows: Array<Record<string, unknown>>): TradeRow[] =>
 
 const calculateMetrics = (trades: TradeRow[]): Metrics => {
   const totalTrades = trades.length;
-  const wins = trades.filter((trade) => trade.profitLoss > 0);
-  const losses = trades.filter((trade) => trade.profitLoss < 0);
-
-  const totalProfit = wins.reduce((sum, trade) => sum + trade.profitLoss, 0);
-  const totalLossAbs = losses.reduce((sum, trade) => sum + Math.abs(trade.profitLoss), 0);
-
-  const avgProfit = wins.length > 0 ? totalProfit / wins.length : 0;
-  const avgLoss = losses.length > 0 ? totalLossAbs / losses.length : 0;
-  const winRate = totalTrades > 0 ? (wins.length / totalTrades) * 100 : 0;
-
+  let wins = 0;
+  let losses = 0;
+  let totalProfit = 0;
+  let totalLossAbs = 0;
+  let profitLoss = 0;
   let currentBalance: number | null = null;
-  for (let idx = trades.length - 1; idx >= 0; idx -= 1) {
-    if (trades[idx].balance !== null) {
-      currentBalance = trades[idx].balance;
-      break;
+
+  for (const trade of trades) {
+    const pnl = trade.profitLoss;
+    profitLoss += pnl;
+
+    if (pnl > 0) {
+      wins += 1;
+      totalProfit += pnl;
+    } else if (pnl < 0) {
+      losses += 1;
+      totalLossAbs += Math.abs(pnl);
+    }
+
+    if (trade.balance !== null) {
+      currentBalance = trade.balance;
     }
   }
+
+  const avgProfit = wins > 0 ? totalProfit / wins : 0;
+  const avgLoss = losses > 0 ? totalLossAbs / losses : 0;
+  const winRate = totalTrades > 0 ? (wins / totalTrades) * 100 : 0;
 
   return {
     totalTrades,
@@ -150,9 +160,24 @@ const calculateMetrics = (trades: TradeRow[]): Metrics => {
     avgLoss,
     pointFactor:
       totalLossAbs > 0 ? totalProfit / totalLossAbs : totalProfit > 0 ? Number.POSITIVE_INFINITY : 0,
-    profitLoss: trades.reduce((sum, trade) => sum + trade.profitLoss, 0),
+    profitLoss,
     currentBalance,
   };
+};
+
+const downsampleSeries = <T,>(series: T[], maxPoints: number): T[] => {
+  if (series.length <= maxPoints) {
+    return series;
+  }
+
+  const stride = Math.ceil(series.length / maxPoints);
+  const sampled = series.filter((_, idx) => idx % stride === 0);
+
+  if (sampled[sampled.length - 1] !== series[series.length - 1]) {
+    sampled.push(series[series.length - 1]);
+  }
+
+  return sampled;
 };
 
 const getSeverityStyles = (severity: InsightTile["severity"]) => {
@@ -300,23 +325,41 @@ export default function App() {
     [trades],
   );
 
+  const chartSeries = useMemo(
+    () => downsampleSeries(balanceSeries, MAX_CHART_POINTS),
+    [balanceSeries],
+  );
+
   const yDomain = useMemo(() => {
-    if (balanceSeries.length === 0) {
+    if (chartSeries.length === 0) {
       return [0, 1] as const;
     }
 
-    const values = balanceSeries.map((point) => point.balance);
-    const min = Math.min(...values);
-    const max = Math.max(...values);
+    let min = Number.POSITIVE_INFINITY;
+    let max = Number.NEGATIVE_INFINITY;
+    for (const point of chartSeries) {
+      if (point.balance < min) {
+        min = point.balance;
+      }
+      if (point.balance > max) {
+        max = point.balance;
+      }
+    }
+
     const padding = Math.max((max - min) * 0.08, 50);
     return [Math.max(0, min - padding), max + padding] as const;
-  }, [balanceSeries]);
+  }, [chartSeries]);
 
-  const fetchCsvPage = async (file: File, page: number): Promise<BackendPageResponse> => {
+  const chartLabelByIndex = useMemo(
+    () => new Map(chartSeries.map((point) => [point.index, point.label])),
+    [chartSeries],
+  );
+
+  const fetchCsvData = async (file: File): Promise<BackendPageResponse> => {
     const formData = new FormData();
     formData.append("file", file);
 
-    const response = await fetch(`/api/data?page=${page}&per_page=${PAGE_SIZE}`, {
+    const response = await fetch("/api/data", {
       method: "POST",
       body: formData,
     });
@@ -336,16 +379,8 @@ export default function App() {
     setError(null);
 
     try {
-      const firstPage = await fetchCsvPage(file, 1);
-      const totalPages = Math.max(1, Math.ceil(firstPage.total / firstPage.per_page));
-      const allRows = [...firstPage.data];
-
-      for (let page = 2; page <= totalPages; page += 1) {
-        const nextPage = await fetchCsvPage(file, page);
-        allRows.push(...nextPage.data);
-      }
-
-      setTrades(parseTrades(allRows));
+      const data = await fetchCsvData(file);
+      setTrades(parseTrades(data.data));
     } catch (err) {
       console.error(err);
       setTrades([]);
@@ -354,18 +389,6 @@ export default function App() {
       setIsLoading(false);
     }
   };
-
-  const yDomain = useMemo(() => {
-    if (balanceSeries.length === 0) {
-      return [0, 1] as const;
-    }
-
-    const values = balanceSeries.map((point) => point.balance);
-    const min = Math.min(...values);
-    const max = Math.max(...values);
-    const padding = Math.max((max - min) * 0.08, 50);
-    return [Math.max(0, min - padding), max + padding] as const;
-  }, [balanceSeries]);
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -493,7 +516,7 @@ export default function App() {
                 <CardContent>
                   <div className="h-72 w-full">
                     <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={balanceSeries}>
+                      <LineChart data={chartSeries}>
                         <CartesianGrid strokeDasharray="3 3" />
                         <XAxis
                           dataKey="index"
@@ -504,8 +527,8 @@ export default function App() {
                         <Tooltip
                           formatter={(value: number) => [`$${condenseDisplayNumber(Number(value), 2)}`, "Balance"]}
                           labelFormatter={(label) => {
-                            const point = balanceSeries.find((item) => item.index === Number(label));
-                            return point ? point.label : `Trade ${label}`;
+                            const tradeLabel = chartLabelByIndex.get(Number(label));
+                            return tradeLabel ?? `Trade ${label}`;
                           }}
                         />
                         <Line
