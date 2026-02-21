@@ -67,7 +67,7 @@ export function FileUpload({ onFileSelect, isLoading }: FileUploadProps) {
             disabled={isLoading}
           />
           <p className="text-xs text-gray-400 mt-2">
-            Expected columns: date, symbol, action, quantity, price
+            Expected columns: timestamp, asset, side, quantity, entry_price, exit_price, profit_loss, balance
           </p>
         </div>
       </div>

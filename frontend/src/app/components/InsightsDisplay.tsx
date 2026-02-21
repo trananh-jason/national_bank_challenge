@@ -1,4 +1,4 @@
-import { AlertTriangle, TrendingUp, TrendingDown, DollarSign, BarChart3 } from "lucide-react";
+import { AlertTriangle, TrendingUp, TrendingDown, DollarSign, BarChart3, Wallet } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/card";
 import { Badge } from "./ui/badge";
 import { Progress } from "./ui/progress";
@@ -17,6 +17,9 @@ export interface TradeStats {
   avgProfit: number;
   avgLoss: number;
   profitFactor: number;
+  totalPnL: number;
+  currentBalance: number;
+  startingBalance: number;
 }
 
 interface InsightsDisplayProps {
@@ -24,20 +27,14 @@ interface InsightsDisplayProps {
   stats: TradeStats;
 }
 
-export function InsightsDisplay({ insights, stats }: InsightsDisplayProps) {
-  const getSeverityColor = (severity: string) => {
-    switch (severity) {
-      case "high":
-        return "bg-red-500";
-      case "medium":
-        return "bg-yellow-500";
-      case "low":
-        return "bg-green-500";
-      default:
-        return "bg-gray-500";
-    }
-  };
+const formatCurrency = (value: number) =>
+  new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 2,
+  }).format(value);
 
+export function InsightsDisplay({ insights, stats }: InsightsDisplayProps) {
   const getSeverityBadgeVariant = (severity: string) => {
     switch (severity) {
       case "high":
@@ -51,16 +48,19 @@ export function InsightsDisplay({ insights, stats }: InsightsDisplayProps) {
     }
   };
 
+  const profitFactorLabel = Number.isFinite(stats.profitFactor)
+    ? stats.profitFactor.toFixed(2)
+    : "∞";
+
   return (
     <div className="space-y-6">
-      {/* Trade Statistics */}
       <Card>
         <CardHeader>
           <CardTitle>Trade Statistics</CardTitle>
           <CardDescription>Overview of your trading performance</CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+          <div className="grid grid-cols-2 md:grid-cols-7 gap-4">
             <div className="flex flex-col gap-2">
               <div className="flex items-center gap-2 text-sm text-gray-500">
                 <BarChart3 className="w-4 h-4" />
@@ -81,7 +81,7 @@ export function InsightsDisplay({ insights, stats }: InsightsDisplayProps) {
                 <span>Avg Profit</span>
               </div>
               <div className="font-semibold text-2xl text-green-600">
-                ${stats.avgProfit.toFixed(2)}
+                {formatCurrency(stats.avgProfit)}
               </div>
             </div>
             <div className="flex flex-col gap-2">
@@ -90,7 +90,7 @@ export function InsightsDisplay({ insights, stats }: InsightsDisplayProps) {
                 <span>Avg Loss</span>
               </div>
               <div className="font-semibold text-2xl text-red-600">
-                ${stats.avgLoss.toFixed(2)}
+                {formatCurrency(stats.avgLoss)}
               </div>
             </div>
             <div className="flex flex-col gap-2">
@@ -98,13 +98,30 @@ export function InsightsDisplay({ insights, stats }: InsightsDisplayProps) {
                 <BarChart3 className="w-4 h-4" />
                 <span>Profit Factor</span>
               </div>
-              <div className="font-semibold text-2xl">{stats.profitFactor.toFixed(2)}</div>
+              <div className="font-semibold text-2xl">{profitFactorLabel}</div>
+            </div>
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center gap-2 text-sm text-gray-500">
+                <DollarSign className={`w-4 h-4 ${stats.totalPnL >= 0 ? "text-green-500" : "text-red-500"}`} />
+                <span>Total P/L</span>
+              </div>
+              <div className={`font-semibold text-2xl ${stats.totalPnL >= 0 ? "text-green-600" : "text-red-600"}`}>
+                {formatCurrency(stats.totalPnL)}
+              </div>
+            </div>
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center gap-2 text-sm text-gray-500">
+                <Wallet className="w-4 h-4 text-blue-500" />
+                <span>Current Balance</span>
+              </div>
+              <div className="font-semibold text-2xl text-blue-600">
+                {formatCurrency(stats.currentBalance)}
+              </div>
             </div>
           </div>
         </CardContent>
       </Card>
 
-      {/* Bias Insights */}
       <div>
         <h2 className="text-2xl font-semibold mb-4">Detected Biases</h2>
         <div className="space-y-4">
@@ -123,9 +140,7 @@ export function InsightsDisplay({ insights, stats }: InsightsDisplayProps) {
                           {insight.severity.toUpperCase()}
                         </Badge>
                       </div>
-                      <CardDescription className="text-sm">
-                        {insight.description}
-                      </CardDescription>
+                      <CardDescription className="text-sm">{insight.description}</CardDescription>
                     </div>
                   </div>
                 </div>
@@ -134,7 +149,7 @@ export function InsightsDisplay({ insights, stats }: InsightsDisplayProps) {
                 <div>
                   <div className="flex justify-between text-sm mb-2">
                     <span className="text-gray-500">Bias Indicator</span>
-                    <span className="font-medium">{insight.metric}%</span>
+                    <span className="font-medium">{insight.metric.toFixed(1)}%</span>
                   </div>
                   <Progress value={insight.metric} className="h-2" />
                 </div>
