@@ -10,7 +10,7 @@ Repository for the National Bank hackathon project.
 
 ### 1. Clone the repository
 ```bash
-git clone <repo-url>
+git clone <https://github.com/trananh-jason/national_bank_challenge.git>
 cd national_bank_challenge
 ```
 
