@@ -1,39 +1,64 @@
+import io
+from typing import Any
+
 import pandas as pd
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 
 app = Flask(__name__)
-@app.route("/")
 
-def load_csv(file_path):
+
+def _clean_nan(value: Any) -> Any:
+    if pd.isna(value):
+        return None
+    return value
+
+
+@app.route("/api/data", methods=["POST"])
+def parse_uploaded_csv():
+    csv_file = request.files.get("file")
+    if csv_file is None:
+        return jsonify({"error": "Missing file field. Submit multipart form-data with key 'file'."}), 400
+
+    page = int(request.args.get("page", 1))
+    per_page = int(request.args.get("per_page", 100))
+
+    if page < 1 or per_page < 1:
+        return jsonify({"error": "page and per_page must be positive integers."}), 400
+
     try:
-        # Read CSV file
-        df = pd.read_csv(file_path, skiprows=1, header=0)
-        
-        # Display basic information
-        # timestamp,asset,side,quantity,entry_price,exit_price,profit_loss,balance
-        print("\nCSV Loaded Successfully!\n")
-        print("First 5 rows:")
-        print(df)
-        
-        print("\nDataset Info:")
-        print(df.info())
-        
-        print("\nSummary Statistics:")
-        print(df.describe())
-        return df
+        content = csv_file.read()
+        if not content:
+            return jsonify({"error": "Uploaded file is empty."}), 400
 
-    except FileNotFoundError:
-        print("File not found. " + file_path)
+        decoded = content.decode("utf-8-sig")
+        df = pd.read_csv(io.StringIO(decoded))
+    except UnicodeDecodeError:
+        return jsonify({"error": "Unable to decode file as UTF-8 CSV."}), 400
     except pd.errors.EmptyDataError:
-        print("CSV file is empty.")
-    except Exception as e:
-        print(f"Unexpected error: {e}")
+        return jsonify({"error": "CSV file is empty."}), 400
+    except Exception as exc:
+        return jsonify({"error": f"Failed to parse CSV: {exc}"}), 400
 
+    start = (page - 1) * per_page
+    end = start + per_page
+    paginated = df.iloc[start:end].copy()
+    paginated = paginated.where(pd.notna(paginated), None)
 
-def get_data(data):
-    return jsonify(data)
+    records = [
+        {col: _clean_nan(value) for col, value in row.items()}
+        for row in paginated.to_dict(orient="records")
+    ]
+
+    return jsonify(
+        {
+            "total": len(df),
+            "page": page,
+            "per_page": per_page,
+            "columns": df.columns.tolist(),
+            "data": records,
+        }
+    )
+
 
 if __name__ == "__main__":
-    file_path = input("Enter path to your CSV file: ")
-    data = load_csv(file_path)
-
+    app.run(debug=True)

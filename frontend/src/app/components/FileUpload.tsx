@@ -67,7 +67,7 @@ export function FileUpload({ onFileSelect, isLoading }: FileUploadProps) {
             disabled={isLoading}
           />
           <p className="text-xs text-gray-400 mt-2">
-            Expected columns: date, symbol, action, quantity, price
+            Any CSV columns are supported; data is parsed by the backend.
           </p>
         </div>
       </div>

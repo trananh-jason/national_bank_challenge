@@ -1,219 +1,293 @@
-import { useState } from "react";
-import * as Papa from "papaparse";
+import { useMemo, useState } from "react";
+import { Activity, LineChart as LineChartIcon } from "lucide-react";
+import {
+  CartesianGrid,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 import { FileUpload } from "./components/FileUpload";
-import { InsightsDisplay, BiasInsight, TradeStats } from "./components/InsightsDisplay";
-import { Activity } from "lucide-react";
+import { Card, CardContent, CardHeader, CardTitle } from "./components/ui/card";
 
-interface Trade {
-  date: string;
-  symbol: string;
-  action: string;
-  quantity: number;
-  price: number;
+interface BackendPageResponse {
+  total: number;
+  page: number;
+  per_page: number;
+  columns: string[];
+  data: Array<Record<string, unknown>>;
 }
 
+interface TradeRow {
+  timestamp: string;
+  side: string;
+  quantity: number;
+  entryPrice: number;
+  exitPrice: number;
+  profitLoss: number;
+  balance: number | null;
+}
+
+interface Metrics {
+  totalTrades: number;
+  winRate: number;
+  avgProfit: number;
+  avgLoss: number;
+  pointFactor: number;
+  profitLoss: number;
+  currentBalance: number | null;
+}
+
+const PAGE_SIZE = 1000;
+
+const toNumber = (value: unknown): number => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const parseTrades = (rows: Array<Record<string, unknown>>): TradeRow[] =>
+  rows.map((row, index) => ({
+    timestamp: String(row.timestamp ?? row.date ?? `row-${index + 1}`),
+    side: String(row.side ?? row.action ?? "").toUpperCase(),
+    quantity: toNumber(row.quantity),
+    entryPrice: toNumber(row.entry_price ?? row.price),
+    exitPrice: toNumber(row.exit_price ?? row.price),
+    profitLoss: toNumber(row.profit_loss),
+    balance:
+      row.balance === null || row.balance === undefined || row.balance === ""
+        ? null
+        : toNumber(row.balance),
+  }));
+
+const calculateMetrics = (trades: TradeRow[]): Metrics => {
+  const totalTrades = trades.length;
+  const wins = trades.filter((trade) => trade.profitLoss > 0);
+  const losses = trades.filter((trade) => trade.profitLoss < 0);
+
+  const totalProfit = wins.reduce((sum, trade) => sum + trade.profitLoss, 0);
+  const totalLossAbs = losses.reduce((sum, trade) => sum + Math.abs(trade.profitLoss), 0);
+
+  const avgProfit = wins.length > 0 ? totalProfit / wins.length : 0;
+  const avgLoss = losses.length > 0 ? totalLossAbs / losses.length : 0;
+  const winRate = totalTrades > 0 ? (wins.length / totalTrades) * 100 : 0;
+
+  let currentBalance: number | null = null;
+  for (let idx = trades.length - 1; idx >= 0; idx -= 1) {
+    if (trades[idx].balance !== null) {
+      currentBalance = trades[idx].balance;
+      break;
+    }
+  }
+
+  return {
+    totalTrades,
+    winRate,
+    avgProfit,
+    avgLoss,
+    pointFactor: totalLossAbs > 0 ? totalProfit / totalLossAbs : totalProfit > 0 ? Number.POSITIVE_INFINITY : 0,
+    profitLoss: trades.reduce((sum, trade) => sum + trade.profitLoss, 0),
+    currentBalance,
+  };
+};
+
 export default function App() {
-  const [insights, setInsights] = useState<BiasInsight[] | null>(null);
-  const [stats, setStats] = useState<TradeStats | null>(null);
+  const [trades, setTrades] = useState<TradeRow[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const analyzeTrades = (trades: Trade[]) => {
-    // Calculate basic statistics
-    const totalTrades = trades.length;
-    const buys = trades.filter((t) => t.action.toLowerCase() === "buy");
-    const sells = trades.filter((t) => t.action.toLowerCase() === "sell");
+  const metrics = useMemo(() => calculateMetrics(trades), [trades]);
 
-    // Calculate profits/losses (simplified)
-    let profits: number[] = [];
-    let losses: number[] = [];
-    
-    // Group trades by symbol to calculate P&L
-    const symbolTrades: { [key: string]: Trade[] } = {};
-    trades.forEach((trade) => {
-      if (!symbolTrades[trade.symbol]) {
-        symbolTrades[trade.symbol] = [];
-      }
-      symbolTrades[trade.symbol].push(trade);
+  const balanceSeries = useMemo(
+    () =>
+      trades
+        .filter((trade) => trade.balance !== null)
+        .map((trade, index) => ({
+          label: trade.timestamp,
+          index: index + 1,
+          balance: trade.balance as number,
+        })),
+    [trades],
+  );
+
+  const fetchCsvPage = async (file: File, page: number): Promise<BackendPageResponse> => {
+    const formData = new FormData();
+    formData.append("file", file);
+
+    const response = await fetch(`/api/data?page=${page}&per_page=${PAGE_SIZE}`, {
+      method: "POST",
+      body: formData,
     });
 
-    // Simple P&L calculation
-    Object.values(symbolTrades).forEach((symbolTradeList) => {
-      let position = 0;
-      let avgCost = 0;
+    const payload = (await response.json()) as BackendPageResponse | { error: string };
 
-      symbolTradeList.forEach((trade) => {
-        if (trade.action.toLowerCase() === "buy") {
-          avgCost = ((avgCost * position) + (trade.price * trade.quantity)) / (position + trade.quantity);
-          position += trade.quantity;
-        } else if (trade.action.toLowerCase() === "sell" && position > 0) {
-          const pnl = (trade.price - avgCost) * Math.min(trade.quantity, position);
-          if (pnl > 0) {
-            profits.push(pnl);
-          } else {
-            losses.push(Math.abs(pnl));
-          }
-          position -= trade.quantity;
-        }
-      });
-    });
-
-    const winRate = profits.length > 0 ? (profits.length / (profits.length + losses.length)) * 100 : 0;
-    const avgProfit = profits.length > 0 ? profits.reduce((a, b) => a + b, 0) / profits.length : 0;
-    const avgLoss = losses.length > 0 ? losses.reduce((a, b) => a + b, 0) / losses.length : 0;
-    const profitFactor = avgLoss > 0 ? (avgProfit * profits.length) / (avgLoss * losses.length) : 0;
-
-    const tradeStats: TradeStats = {
-      totalTrades,
-      winRate: parseFloat(winRate.toFixed(1)),
-      avgProfit,
-      avgLoss,
-      profitFactor,
-    };
-
-    // Analyze biases
-    const detectedBiases: BiasInsight[] = [];
-
-    // 1. Loss Aversion Bias - holding losing positions too long
-    if (avgLoss > avgProfit * 1.5) {
-      detectedBiases.push({
-        type: "Loss Aversion Bias",
-        severity: "high",
-        description: "Your average loss is significantly higher than your average profit, suggesting you may be holding onto losing positions too long.",
-        recommendation: "Implement strict stop-loss rules and stick to them. Cut losses quickly and let winners run.",
-        metric: Math.min(((avgLoss / avgProfit) * 50), 100),
-      });
+    if (!response.ok) {
+      const message = "error" in payload ? payload.error : "Failed to parse CSV.";
+      throw new Error(message);
     }
 
-    // 2. Overtrading Bias
-    const tradesPerSymbol = trades.length / Object.keys(symbolTrades).length;
-    if (tradesPerSymbol > 8) {
-      detectedBiases.push({
-        type: "Overtrading Bias",
-        severity: "medium",
-        description: `High trade frequency detected (${tradesPerSymbol.toFixed(1)} trades per symbol). This may indicate emotional trading or lack of strategy discipline.`,
-        recommendation: "Focus on quality over quantity. Wait for high-probability setups and avoid impulsive trades.",
-        metric: Math.min(tradesPerSymbol * 10, 100),
-      });
-    }
-
-    // 3. Recency Bias - concentration of trades in recent period
-    const sortedTrades = [...trades].sort((a, b) => 
-      new Date(a.date).getTime() - new Date(b.date).getTime()
-    );
-    const recentTrades = sortedTrades.slice(-Math.floor(trades.length / 3));
-    const recentConcentration = (recentTrades.length / trades.length) * 100;
-    
-    if (recentConcentration > 40) {
-      detectedBiases.push({
-        type: "Recency Bias",
-        severity: "medium",
-        description: "High concentration of trades in recent period may indicate reactive trading based on recent events.",
-        recommendation: "Maintain consistent trading discipline. Avoid letting recent wins or losses dramatically change your strategy.",
-        metric: recentConcentration,
-      });
-    }
-
-    // 4. Confirmation Bias - repeatedly trading same symbols
-    const symbolFrequency: { [key: string]: number } = {};
-    trades.forEach((trade) => {
-      symbolFrequency[trade.symbol] = (symbolFrequency[trade.symbol] || 0) + 1;
-    });
-    const maxFreq = Math.max(...Object.values(symbolFrequency));
-    const concentration = (maxFreq / trades.length) * 100;
-
-    if (concentration > 25) {
-      detectedBiases.push({
-        type: "Confirmation Bias",
-        severity: "low",
-        description: `Heavy focus on certain symbols (${concentration.toFixed(1)}% concentration) may indicate bias toward familiar assets.`,
-        recommendation: "Diversify your analysis. Avoid tunnel vision on specific assets and explore opportunities across different sectors.",
-        metric: concentration,
-      });
-    }
-
-    // 5. Win Rate Analysis
-    if (winRate < 40) {
-      detectedBiases.push({
-        type: "Strategy Effectiveness",
-        severity: "high",
-        description: `Win rate of ${winRate.toFixed(1)}% is below optimal levels, indicating potential strategy issues.`,
-        recommendation: "Review your entry and exit criteria. Consider paper trading to refine your strategy before risking more capital.",
-        metric: 100 - winRate,
-      });
-    }
-
-    return { insights: detectedBiases, stats: tradeStats };
+    return payload as BackendPageResponse;
   };
 
-  const handleFileSelect = (file: File) => {
+  const handleFileSelect = async (file: File) => {
     setIsLoading(true);
-    setInsights(null);
-    setStats(null);
+    setError(null);
 
-    Papa.parse(file, {
-      header: true,
-      skipEmptyLines: true,
-      complete: (results) => {
-        try {
-          const trades = results.data.map((row: any) => ({
-            date: row.date,
-            symbol: row.symbol,
-            action: row.action,
-            quantity: parseFloat(row.quantity),
-            price: parseFloat(row.price),
-          }));
+    try {
+      const firstPage = await fetchCsvPage(file, 1);
+      const totalPages = Math.max(1, Math.ceil(firstPage.total / firstPage.per_page));
+      const allRows = [...firstPage.data];
 
-          const { insights, stats } = analyzeTrades(trades);
-          setInsights(insights);
-          setStats(stats);
-        } catch (error) {
-          console.error("Error analyzing trades:", error);
-          alert("Error analyzing trades. Please check your CSV format.");
-        } finally {
-          setIsLoading(false);
-        }
-      },
-      error: (error) => {
-        console.error("Error parsing CSV:", error);
-        alert("Error parsing CSV file. Please check the format.");
-        setIsLoading(false);
-      },
-    });
+      for (let page = 2; page <= totalPages; page += 1) {
+        const nextPage = await fetchCsvPage(file, page);
+        allRows.push(...nextPage.data);
+      }
+
+      setTrades(parseTrades(allRows));
+    } catch (err) {
+      console.error(err);
+      setTrades([]);
+      setError(err instanceof Error ? err.message : "Unexpected error while uploading CSV.");
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (
     <div className="min-h-screen bg-gray-50">
-      {/* Header */}
       <div className="bg-white border-b">
         <div className="container mx-auto px-4 py-6">
           <div className="flex items-center gap-3">
             <div className="rounded-lg bg-blue-500 p-2">
-              <Activity className="w-6 h-6 text-white" />
+              <Activity className="h-6 w-6 text-white" />
             </div>
             <div>
               <h1 className="text-2xl font-bold">Trade Bias Detector</h1>
-              <p className="text-gray-500 text-sm">
-                Analyze your trading patterns and identify cognitive biases
-              </p>
+              <p className="text-sm text-gray-500">Upload a CSV to analyze key performance metrics</p>
             </div>
           </div>
         </div>
       </div>
 
-      {/* Main Content */}
       <div className="container mx-auto px-4 py-8">
-        <div className="max-w-5xl mx-auto space-y-8">
+        <div className="mx-auto max-w-6xl space-y-8">
           <FileUpload onFileSelect={handleFileSelect} isLoading={isLoading} />
 
-          {insights && stats && (
-            <div className="animate-in fade-in duration-500">
-              <InsightsDisplay insights={insights} stats={stats} />
+          {error && (
+            <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+              {error}
             </div>
           )}
 
-          {!insights && !isLoading && (
-            <div className="text-center py-12 text-gray-500">
-              <p>Upload a CSV file to get started with bias analysis</p>
+          {trades.length > 0 && (
+            <>
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7">
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm text-gray-500">Total Trades</CardTitle>
+                  </CardHeader>
+                  <CardContent className="text-2xl font-semibold">{metrics.totalTrades}</CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm text-gray-500">Win Rate</CardTitle>
+                  </CardHeader>
+                  <CardContent className="text-2xl font-semibold">{metrics.winRate.toFixed(1)}%</CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm text-gray-500">Avg Profit</CardTitle>
+                  </CardHeader>
+                  <CardContent className="text-2xl font-semibold text-green-600">
+                    ${metrics.avgProfit.toFixed(2)}
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm text-gray-500">Avg Loss</CardTitle>
+                  </CardHeader>
+                  <CardContent className="text-2xl font-semibold text-red-600">
+                    ${metrics.avgLoss.toFixed(2)}
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm text-gray-500">Point Factor</CardTitle>
+                  </CardHeader>
+                  <CardContent className="text-2xl font-semibold">
+                    {Number.isFinite(metrics.pointFactor) ? metrics.pointFactor.toFixed(2) : "Infinity"}
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm text-gray-500">Profit/Loss</CardTitle>
+                  </CardHeader>
+                  <CardContent
+                    className={`text-2xl font-semibold ${metrics.profitLoss >= 0 ? "text-green-600" : "text-red-600"}`}
+                  >
+                    ${metrics.profitLoss.toFixed(2)}
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm text-gray-500">Current Balance</CardTitle>
+                  </CardHeader>
+                  <CardContent className="text-2xl font-semibold">
+                    {metrics.currentBalance === null ? "-" : `$${metrics.currentBalance.toFixed(2)}`}
+                  </CardContent>
+                </Card>
+              </div>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2 text-lg">
+                    <LineChartIcon className="h-5 w-5" />
+                    Balance Over Time
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="h-72 w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={balanceSeries}>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis
+                          dataKey="index"
+                          tick={{ fontSize: 12 }}
+                          label={{ value: "Trades", position: "insideBottom", offset: -5 }}
+                        />
+                        <YAxis tick={{ fontSize: 12 }} />
+                        <Tooltip
+                          formatter={(value: number) => [`$${Number(value).toFixed(2)}`, "Balance"]}
+                          labelFormatter={(label) => {
+                            const point = balanceSeries.find((item) => item.index === Number(label));
+                            return point ? point.label : `Trade ${label}`;
+                          }}
+                        />
+                        <Line
+                          type="monotone"
+                          dataKey="balance"
+                          stroke="#2563eb"
+                          strokeWidth={2}
+                          dot={false}
+                        />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                </CardContent>
+              </Card>
+            </>
+          )}
+
+          {!isLoading && trades.length === 0 && !error && (
+            <div className="py-12 text-center text-gray-500">
+              Upload a CSV file to view metrics and balance history.
             </div>
           )}
         </div>
