@@ -40,6 +40,13 @@ interface Metrics {
   currentBalance: number | null;
 }
 
+interface InsightTile {
+  title: string;
+  severity: "low" | "medium" | "high";
+  trend: string;
+  description: string;
+}
+
 const PAGE_SIZE = 1000;
 
 const toNumber = (value: unknown): number => {
@@ -86,10 +93,136 @@ const calculateMetrics = (trades: TradeRow[]): Metrics => {
     winRate,
     avgProfit,
     avgLoss,
-    pointFactor: totalLossAbs > 0 ? totalProfit / totalLossAbs : totalProfit > 0 ? Number.POSITIVE_INFINITY : 0,
+    pointFactor:
+      totalLossAbs > 0 ? totalProfit / totalLossAbs : totalProfit > 0 ? Number.POSITIVE_INFINITY : 0,
     profitLoss: trades.reduce((sum, trade) => sum + trade.profitLoss, 0),
     currentBalance,
   };
+};
+
+const getSeverityStyles = (severity: InsightTile["severity"]) => {
+  if (severity === "high") {
+    return "border-red-200 bg-red-50 text-red-700";
+  }
+
+  if (severity === "medium") {
+    return "border-amber-200 bg-amber-50 text-amber-700";
+  }
+
+  return "border-emerald-200 bg-emerald-50 text-emerald-700";
+};
+
+const calculateMaxDrawdownPct = (trades: TradeRow[]): number => {
+  let runningBalance = 0;
+  let peak = Number.NEGATIVE_INFINITY;
+  let maxDrawdown = 0;
+
+  trades.forEach((trade) => {
+    if (trade.balance !== null) {
+      runningBalance = trade.balance;
+    } else {
+      runningBalance += trade.profitLoss;
+    }
+
+    if (runningBalance > peak) {
+      peak = runningBalance;
+    }
+
+    if (peak > 0) {
+      const drawdownPct = ((peak - runningBalance) / peak) * 100;
+      if (drawdownPct > maxDrawdown) {
+        maxDrawdown = drawdownPct;
+      }
+    }
+  });
+
+  return maxDrawdown;
+};
+
+const buildBehavioralInsights = (trades: TradeRow[], metrics: Metrics): InsightTile[] => {
+  if (trades.length === 0) {
+    return [];
+  }
+
+  const avgProfitSafe = Math.max(metrics.avgProfit, 1e-6);
+  const lossToWinRatio = metrics.avgLoss / avgProfitSafe;
+
+  const dispositionSeverity: InsightTile["severity"] =
+    lossToWinRatio > 1.75 ? "high" : lossToWinRatio > 1.2 ? "medium" : "low";
+
+  const dispositionTile: InsightTile = {
+    title: "Disposition Effect",
+    severity: dispositionSeverity,
+    trend: `${lossToWinRatio.toFixed(2)}x loss-to-win size ratio`,
+    description:
+      dispositionSeverity === "low"
+        ? "Losses are controlled relative to gains."
+        : "Losses are larger than winners, which suggests holding losers too long.",
+  };
+
+  const dayBuckets = new Set(
+    trades
+      .map((trade) => trade.timestamp.split(" ")[0])
+      .filter((value) => value.length > 0),
+  );
+  const activeDays = Math.max(dayBuckets.size, 1);
+  const tradesPerDay = trades.length / activeDays;
+
+  const paceSeverity: InsightTile["severity"] =
+    tradesPerDay > 30 ? "high" : tradesPerDay > 15 ? "medium" : "low";
+
+  const paceTile: InsightTile = {
+    title: "Trading Pace",
+    severity: paceSeverity,
+    trend: `${tradesPerDay.toFixed(1)} trades per active day`,
+    description:
+      paceSeverity === "low"
+        ? "Pacing appears stable and selective."
+        : "Higher activity can indicate overtrading and reduced selectivity.",
+  };
+
+  const splitIndex = Math.max(1, Math.floor(trades.length * 0.8));
+  const earlyTrades = trades.slice(0, splitIndex);
+  const recentTrades = trades.slice(splitIndex);
+
+  const earlyMean =
+    earlyTrades.length > 0
+      ? earlyTrades.reduce((sum, trade) => sum + trade.profitLoss, 0) / earlyTrades.length
+      : 0;
+  const recentMean =
+    recentTrades.length > 0
+      ? recentTrades.reduce((sum, trade) => sum + trade.profitLoss, 0) / recentTrades.length
+      : 0;
+
+  const momentumDelta = recentMean - earlyMean;
+  const recencySeverity: InsightTile["severity"] =
+    momentumDelta < -Math.abs(earlyMean) * 0.4 ? "high" : momentumDelta < 0 ? "medium" : "low";
+
+  const recencyTile: InsightTile = {
+    title: "Recency Bias Trend",
+    severity: recencySeverity,
+    trend: `Recent avg P/L ${momentumDelta >= 0 ? "up" : "down"} ${Math.abs(momentumDelta).toFixed(2)} per trade`,
+    description:
+      recencySeverity === "low"
+        ? "Recent decisions are improving or stable versus earlier trades."
+        : "Recent outcomes are deteriorating, often seen when reacting to short-term results.",
+  };
+
+  const maxDrawdown = calculateMaxDrawdownPct(trades);
+  const drawdownSeverity: InsightTile["severity"] =
+    maxDrawdown > 20 ? "high" : maxDrawdown > 10 ? "medium" : "low";
+
+  const drawdownTile: InsightTile = {
+    title: "Drawdown Control",
+    severity: drawdownSeverity,
+    trend: `Max drawdown ${maxDrawdown.toFixed(1)}%`,
+    description:
+      drawdownSeverity === "low"
+        ? "Equity swings are controlled."
+        : "Larger drawdowns suggest risk sizing or stop discipline needs tightening.",
+  };
+
+  return [dispositionTile, paceTile, recencyTile, drawdownTile];
 };
 
 export default function App() {
@@ -98,6 +231,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
 
   const metrics = useMemo(() => calculateMetrics(trades), [trades]);
+  const insightTiles = useMemo(() => buildBehavioralInsights(trades, metrics), [trades, metrics]);
 
   const balanceSeries = useMemo(
     () =>
@@ -110,6 +244,18 @@ export default function App() {
         })),
     [trades],
   );
+
+  const yDomain = useMemo(() => {
+    if (balanceSeries.length === 0) {
+      return [0, 1] as const;
+    }
+
+    const values = balanceSeries.map((point) => point.balance);
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    const padding = Math.max((max - min) * 0.08, 50);
+    return [Math.max(0, min - padding), max + padding] as const;
+  }, [balanceSeries]);
 
   const fetchCsvPage = async (file: File, page: number): Promise<BackendPageResponse> => {
     const formData = new FormData();
@@ -257,6 +403,29 @@ export default function App() {
                 </Card>
               </div>
 
+              <div className="space-y-3">
+                <div>
+                  <h2 className="text-xl font-semibold">Behavioral Finance Insights & Trends</h2>
+                  <p className="text-sm text-gray-500">Pattern alerts inferred from your trade outcomes and pacing</p>
+                </div>
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+                  {insightTiles.map((tile) => (
+                    <Card key={tile.title}>
+                      <CardHeader className="pb-2">
+                        <CardTitle className="text-base">{tile.title}</CardTitle>
+                      </CardHeader>
+                      <CardContent className="space-y-3">
+                        <div className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-medium ${getSeverityStyles(tile.severity)}`}>
+                          {tile.severity.toUpperCase()}
+                        </div>
+                        <p className="text-lg font-semibold text-gray-900">{tile.trend}</p>
+                        <p className="text-sm text-gray-600">{tile.description}</p>
+                      </CardContent>
+                    </Card>
+                  ))}
+                </div>
+              </div>
+
               <Card>
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2 text-lg">
@@ -274,7 +443,7 @@ export default function App() {
                           tick={{ fontSize: 12 }}
                           label={{ value: "Trades", position: "insideBottom", offset: -5 }}
                         />
-                        <YAxis tick={{ fontSize: 12 }} />
+                        <YAxis tick={{ fontSize: 12 }} domain={[yDomain[0], yDomain[1]]} />
                         <Tooltip
                           formatter={(value: number) => [`$${Number(value).toFixed(2)}`, "Balance"]}
                           labelFormatter={(label) => {
