@@ -493,71 +493,9 @@ export default function App() {
             <>
               <FileUpload onFileSelect={handleFileSelect} isLoading={isLoading} />
 
-<<<<<<< Updated upstream
-                <Card>
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-sm text-gray-500">Win Rate</CardTitle>
-                  </CardHeader>
-                  <CardContent className="text-2xl font-semibold">{metrics.winRate.toFixed(1)}%</CardContent>
-                </Card>
-
-                <Card>
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-sm text-gray-500">Avg Profit</CardTitle>
-                  </CardHeader>
-                  <CardContent className="text-2xl font-semibold text-green-600">
-                    ${metrics.avgProfit.toFixed(2)}
-                  </CardContent>
-                </Card>
-
-                <Card>
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-sm text-gray-500">Avg Loss</CardTitle>
-                  </CardHeader>
-                  <CardContent className="text-2xl font-semibold text-red-600">
-                    ${metrics.avgLoss.toFixed(2)}
-                  </CardContent>
-                </Card>
-
-                <Card>
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-sm text-gray-500">Point Factor</CardTitle>
-                  </CardHeader>
-                  <CardContent className="text-2xl font-semibold">
-                    {Number.isFinite(metrics.pointFactor) ? metrics.pointFactor.toFixed(2) : "Infinity"}
-                  </CardContent>
-                </Card>
-
-                <Card>
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-sm text-gray-500">Profit/Loss</CardTitle>
-                  </CardHeader>
-                  <CardContent
-                    className={`text-2xl font-semibold ${metrics.profitLoss >= 0 ? "text-green-600" : "text-red-600"}`}
-                  >
-                    ${metrics.profitLoss.toFixed(2)}
-                  </CardContent>
-                </Card>
-
-                <Card>
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-sm text-gray-500">Current Balance</CardTitle>
-                  </CardHeader>
-                  <CardContent className="text-2xl font-semibold">
-                    {metrics.currentBalance === null ? "-" : `$${metrics.currentBalance.toFixed(2)}`}
-                  </CardContent>
-                </Card>
-              </div>
-
-              <div className="space-y-3">
-                <div>
-                  <h2 className="text-xl font-semibold">Behavioral Finance Insights & Trends</h2>
-                  <p className="text-sm text-gray-500">Pattern alerts inferred from your trade outcomes and pacing</p>
-=======
               {error && (
                 <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">
                   {error}
->>>>>>> Stashed changes
                 </div>
               )}
 
@@ -620,47 +558,6 @@ export default function App() {
                         {metrics.currentBalance === null ? "-" : `$${condenseDisplayNumber(metrics.currentBalance, 2)}`}
                       </CardContent>
                     </Card>
-<<<<<<< Updated upstream
-                  ))}
-                </div>
-              </div>
-
-              <Card>
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2 text-lg">
-                    <LineChartIcon className="h-5 w-5" />
-                    Balance Over Time
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="h-72 w-full">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={balanceSeries}>
-                        <CartesianGrid strokeDasharray="3 3" />
-                        <XAxis
-                          dataKey="index"
-                          tick={{ fontSize: 12 }}
-                          label={{ value: "Trades", position: "insideBottom", offset: -5 }}
-                        />
-                        <YAxis tick={{ fontSize: 12 }} domain={[yDomain[0], yDomain[1]]} />
-                        <Tooltip
-                          formatter={(value: number) => [`$${Number(value).toFixed(2)}`, "Balance"]}
-                          labelFormatter={(label) => {
-                            const point = balanceSeries.find((item) => item.index === Number(label));
-                            return point ? point.label : `Trade ${label}`;
-                          }}
-                        />
-                        <Line
-                          type="monotone"
-                          dataKey="balance"
-                          stroke="#2563eb"
-                          strokeWidth={2}
-                          dot={false}
-                        />
-                      </LineChart>
-                    </ResponsiveContainer>
-=======
->>>>>>> Stashed changes
                   </div>
 
                   <div className="space-y-3">
