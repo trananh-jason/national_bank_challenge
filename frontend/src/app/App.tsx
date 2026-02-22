@@ -10,6 +10,8 @@ import {
   YAxis,
 } from "recharts";
 import { FileUpload } from "./components/FileUpload";
+import { AssetOptimization as AssetOptimizationComponent } from "./components/AssetOptimization";
+import { HourAnalysis as HourAnalysisComponent } from "./components/HourAnalysis";
 import { Card, CardContent, CardHeader, CardTitle } from "./components/ui/card";
 
 interface BackendPageResponse {
@@ -22,6 +24,7 @@ interface BackendPageResponse {
 
 interface TradeRow {
   timestamp: string;
+  asset: string;
   side: string;
   quantity: number;
   entryPrice: number;
@@ -45,6 +48,43 @@ interface InsightTile {
   severity: "low" | "medium" | "high";
   trend: string;
   description: string;
+}
+
+interface AssetMetrics {
+  asset: string;
+  totalPnl: number;
+  tradeCount: number;
+  winRate: number;
+  avgWin: number;
+  avgLoss: number;
+  profitFactor: number;
+  expectancy: number;
+  grossProfit: number;
+  grossLoss: number;
+}
+
+interface AssetOptimization {
+  asset: string;
+  metrics: AssetMetrics;
+  suggestions: string[];
+  rankByNetPnl: number;
+  rankByProfitFactor: number;
+  rankByExpectancy: number;
+}
+
+interface HourMetrics {
+  hour: number;
+  tradeCount: number;
+  totalPnl: number;
+  winRate: number;
+  expectancy: number;
+}
+
+interface HourAnalysis {
+  hourMetrics: HourMetrics[];
+  negativeExpectancyHours: number[];
+  strongestHours: number[];
+  earlySessionVolatility: boolean;
 }
 
 const PAGE_SIZE = 1000;
@@ -72,7 +112,11 @@ const formatScaled = (
   return `${(value / divisor).toExponential(1).replace("+", "")}${suffix}`;
 };
 
-const condenseDisplayNumber = (value: number, decimals = 2, maxLength = MAX_NUMERIC_LENGTH): string => {
+const condenseDisplayNumber = (
+  value: number,
+  decimals = 2,
+  maxLength = MAX_NUMERIC_LENGTH,
+): string => {
   if (!Number.isFinite(value)) {
     return "Infinity";
   }
@@ -112,6 +156,9 @@ const condenseDisplayNumber = (value: number, decimals = 2, maxLength = MAX_NUME
 const parseTrades = (rows: Array<Record<string, unknown>>): TradeRow[] =>
   rows.map((row, index) => ({
     timestamp: String(row.timestamp ?? row.date ?? `row-${index + 1}`),
+    asset: String(
+      row.asset ?? row.symbol ?? row.ticker ?? row.instrument ?? "Unknown",
+    ),
     side: String(row.side ?? row.action ?? "").toUpperCase(),
     quantity: toNumber(row.quantity),
     entryPrice: toNumber(row.entry_price ?? row.price),
@@ -129,7 +176,10 @@ const calculateMetrics = (trades: TradeRow[]): Metrics => {
   const losses = trades.filter((trade) => trade.profitLoss < 0);
 
   const totalProfit = wins.reduce((sum, trade) => sum + trade.profitLoss, 0);
-  const totalLossAbs = losses.reduce((sum, trade) => sum + Math.abs(trade.profitLoss), 0);
+  const totalLossAbs = losses.reduce(
+    (sum, trade) => sum + Math.abs(trade.profitLoss),
+    0,
+  );
 
   const avgProfit = wins.length > 0 ? totalProfit / wins.length : 0;
   const avgLoss = losses.length > 0 ? totalLossAbs / losses.length : 0;
@@ -149,7 +199,11 @@ const calculateMetrics = (trades: TradeRow[]): Metrics => {
     avgProfit,
     avgLoss,
     pointFactor:
-      totalLossAbs > 0 ? totalProfit / totalLossAbs : totalProfit > 0 ? Number.POSITIVE_INFINITY : 0,
+      totalLossAbs > 0
+        ? totalProfit / totalLossAbs
+        : totalProfit > 0
+          ? Number.POSITIVE_INFINITY
+          : 0,
     profitLoss: trades.reduce((sum, trade) => sum + trade.profitLoss, 0),
     currentBalance,
   };
@@ -194,7 +248,273 @@ const calculateMaxDrawdownPct = (trades: TradeRow[]): number => {
   return maxDrawdown;
 };
 
-const buildBehavioralInsights = (trades: TradeRow[], metrics: Metrics): InsightTile[] => {
+const calculateAssetMetrics = (
+  trades: TradeRow[],
+): Map<string, AssetMetrics> => {
+  const assetMap = new Map<string, TradeRow[]>();
+
+  // Group trades by asset
+  trades.forEach((trade) => {
+    const asset = trade.asset || "Unknown";
+    if (!assetMap.has(asset)) {
+      assetMap.set(asset, []);
+    }
+    assetMap.get(asset)!.push(trade);
+  });
+
+  const metricsMap = new Map<string, AssetMetrics>();
+
+  assetMap.forEach((assetTrades, asset) => {
+    const wins = assetTrades.filter((trade) => trade.profitLoss > 0);
+    const losses = assetTrades.filter((trade) => trade.profitLoss < 0);
+
+    const grossProfit = wins.reduce((sum, trade) => sum + trade.profitLoss, 0);
+    const grossLoss = losses.reduce((sum, trade) => sum + trade.profitLoss, 0);
+    const grossLossAbs = Math.abs(grossLoss);
+
+    const totalPnl = assetTrades.reduce(
+      (sum, trade) => sum + trade.profitLoss,
+      0,
+    );
+    const tradeCount = assetTrades.length;
+    const winRate = tradeCount > 0 ? (wins.length / tradeCount) * 100 : 0;
+    const avgWin = wins.length > 0 ? grossProfit / wins.length : 0;
+    const avgLoss = losses.length > 0 ? grossLossAbs / losses.length : 0;
+    const profitFactor =
+      grossLossAbs > 0
+        ? grossProfit / grossLossAbs
+        : grossProfit > 0
+          ? Number.POSITIVE_INFINITY
+          : 0;
+    const expectancy = (winRate / 100) * avgWin - (1 - winRate / 100) * avgLoss;
+
+    metricsMap.set(asset, {
+      asset,
+      totalPnl,
+      tradeCount,
+      winRate,
+      avgWin,
+      avgLoss,
+      profitFactor,
+      expectancy,
+      grossProfit,
+      grossLoss,
+    });
+  });
+
+  return metricsMap;
+};
+
+const generateAssetSuggestions = (
+  metrics: AssetMetrics,
+  totalPortfolioPnl: number,
+): string[] => {
+  const suggestions: string[] = [];
+
+  if (metrics.totalPnl < 0) {
+    suggestions.push("Consider reducing exposure to this asset");
+  }
+
+  if (metrics.winRate < 50 && metrics.profitFactor < 1) {
+    suggestions.push("Strategy appears weak for this asset");
+  }
+
+  // Check for capital inefficiency: high trade count but low contribution to total PnL
+  if (totalPortfolioPnl !== 0) {
+    const contributionPct = (metrics.totalPnl / totalPortfolioPnl) * 100;
+    const tradeCountPct = metrics.tradeCount / (metrics.tradeCount + 1); // Normalize
+    if (
+      metrics.tradeCount > 10 &&
+      contributionPct < 5 &&
+      Math.abs(contributionPct) < Math.abs(tradeCountPct * 20)
+    ) {
+      suggestions.push("Capital inefficiency detected");
+    }
+  }
+
+  return suggestions;
+};
+
+const rankAssets = (
+  assetMetrics: Map<string, AssetMetrics>,
+  totalPortfolioPnl: number,
+): AssetOptimization[] => {
+  const optimizations: AssetOptimization[] = [];
+
+  assetMetrics.forEach((metrics) => {
+    const suggestions = generateAssetSuggestions(metrics, totalPortfolioPnl);
+    optimizations.push({
+      asset: metrics.asset,
+      metrics,
+      suggestions,
+      rankByNetPnl: 0,
+      rankByProfitFactor: 0,
+      rankByExpectancy: 0,
+    });
+  });
+
+  // Rank by Net PnL (descending)
+  optimizations.sort((a, b) => b.metrics.totalPnl - a.metrics.totalPnl);
+  optimizations.forEach((opt, index) => {
+    opt.rankByNetPnl = index + 1;
+  });
+
+  // Rank by Profit Factor (descending)
+  optimizations.sort((a, b) => {
+    const aPf = Number.isFinite(a.metrics.profitFactor)
+      ? a.metrics.profitFactor
+      : 0;
+    const bPf = Number.isFinite(b.metrics.profitFactor)
+      ? b.metrics.profitFactor
+      : 0;
+    return bPf - aPf;
+  });
+  optimizations.forEach((opt, index) => {
+    opt.rankByProfitFactor = index + 1;
+  });
+
+  // Rank by Expectancy (descending)
+  optimizations.sort((a, b) => b.metrics.expectancy - a.metrics.expectancy);
+  optimizations.forEach((opt, index) => {
+    opt.rankByExpectancy = index + 1;
+  });
+
+  return optimizations;
+};
+
+const parseHourFromTimestamp = (timestamp: string): number => {
+  try {
+    // Try parsing as ISO string or standard date format
+    const date = new Date(timestamp);
+    if (!Number.isNaN(date.getTime())) {
+      return date.getUTCHours();
+    }
+
+    // Try parsing formats like "2024-01-01 14:30:00" or "01/01/2024 14:30"
+    const timeMatch = timestamp.match(/(\d{1,2}):(\d{2})/);
+    if (timeMatch) {
+      const hour = parseInt(timeMatch[1], 10);
+      return hour >= 0 && hour <= 23 ? hour : 0;
+    }
+
+    return 0;
+  } catch {
+    return 0;
+  }
+};
+
+const calculateHourMetrics = (trades: TradeRow[]): HourMetrics[] => {
+  const hourMap = new Map<number, TradeRow[]>();
+
+  // Initialize all 24 hours
+  for (let hour = 0; hour < 24; hour += 1) {
+    hourMap.set(hour, []);
+  }
+
+  // Group trades by hour
+  trades.forEach((trade) => {
+    const hour = parseHourFromTimestamp(trade.timestamp);
+    hourMap.get(hour)!.push(trade);
+  });
+
+  const hourMetrics: HourMetrics[] = [];
+
+  hourMap.forEach((hourTrades, hour) => {
+    if (hourTrades.length === 0) {
+      hourMetrics.push({
+        hour,
+        tradeCount: 0,
+        totalPnl: 0,
+        winRate: 0,
+        expectancy: 0,
+      });
+      return;
+    }
+
+    const wins = hourTrades.filter((trade) => trade.profitLoss > 0);
+    const losses = hourTrades.filter((trade) => trade.profitLoss < 0);
+
+    const totalPnl = hourTrades.reduce(
+      (sum, trade) => sum + trade.profitLoss,
+      0,
+    );
+    const tradeCount = hourTrades.length;
+    const winRate = tradeCount > 0 ? (wins.length / tradeCount) * 100 : 0;
+
+    const avgWin =
+      wins.length > 0
+        ? wins.reduce((sum, trade) => sum + trade.profitLoss, 0) / wins.length
+        : 0;
+    const avgLoss =
+      losses.length > 0
+        ? Math.abs(losses.reduce((sum, trade) => sum + trade.profitLoss, 0)) /
+          losses.length
+        : 0;
+    const expectancy = (winRate / 100) * avgWin - (1 - winRate / 100) * avgLoss;
+
+    hourMetrics.push({
+      hour,
+      tradeCount,
+      totalPnl,
+      winRate,
+      expectancy,
+    });
+  });
+
+  return hourMetrics.sort((a, b) => a.hour - b.hour);
+};
+
+const analyzeHourPatterns = (hourMetrics: HourMetrics[]): HourAnalysis => {
+  const negativeExpectancyHours: number[] = [];
+  const strongestHours: number[] = [];
+
+  hourMetrics.forEach((hm) => {
+    if (hm.expectancy < 0 && hm.tradeCount > 0) {
+      negativeExpectancyHours.push(hm.hour);
+    }
+  });
+
+  // Find top 3 hours by total PnL or expectancy
+  const sortedByPnl = [...hourMetrics]
+    .filter((hm) => hm.tradeCount > 0)
+    .sort((a, b) => b.totalPnl - a.totalPnl)
+    .slice(0, 3);
+  const sortedByExpectancy = [...hourMetrics]
+    .filter((hm) => hm.tradeCount > 0)
+    .sort((a, b) => b.expectancy - a.expectancy)
+    .slice(0, 3);
+
+  // Combine and deduplicate
+  const topHours = new Set([
+    ...sortedByPnl.map((h) => h.hour),
+    ...sortedByExpectancy.map((h) => h.hour),
+  ]);
+  strongestHours.push(...Array.from(topHours));
+
+  // Check for early-session volatility (hours 9-10, which is 9:00-10:59)
+  const hour9 = hourMetrics.find((hm) => hm.hour === 9);
+  const hour10 = hourMetrics.find((hm) => hm.hour === 10);
+  const earlySessionVolatility: boolean =
+    (hour9 !== undefined && hour9.expectancy < 0 && hour9.tradeCount > 0) ||
+    (hour10 !== undefined && hour10.expectancy < 0 && hour10.tradeCount > 0) ||
+    (hour9 !== undefined &&
+      hour10 !== undefined &&
+      hour9.totalPnl !== 0 &&
+      Math.abs(hour9.totalPnl - hour10.totalPnl) >
+        Math.abs(hour9.totalPnl) * 0.5);
+
+  return {
+    hourMetrics,
+    negativeExpectancyHours,
+    strongestHours,
+    earlySessionVolatility,
+  };
+};
+
+const buildBehavioralInsights = (
+  trades: TradeRow[],
+  metrics: Metrics,
+): InsightTile[] => {
   if (trades.length === 0) {
     return [];
   }
@@ -242,16 +562,22 @@ const buildBehavioralInsights = (trades: TradeRow[], metrics: Metrics): InsightT
 
   const earlyMean =
     earlyTrades.length > 0
-      ? earlyTrades.reduce((sum, trade) => sum + trade.profitLoss, 0) / earlyTrades.length
+      ? earlyTrades.reduce((sum, trade) => sum + trade.profitLoss, 0) /
+        earlyTrades.length
       : 0;
   const recentMean =
     recentTrades.length > 0
-      ? recentTrades.reduce((sum, trade) => sum + trade.profitLoss, 0) / recentTrades.length
+      ? recentTrades.reduce((sum, trade) => sum + trade.profitLoss, 0) /
+        recentTrades.length
       : 0;
 
   const momentumDelta = recentMean - earlyMean;
   const recencySeverity: InsightTile["severity"] =
-    momentumDelta < -Math.abs(earlyMean) * 0.4 ? "high" : momentumDelta < 0 ? "medium" : "low";
+    momentumDelta < -Math.abs(earlyMean) * 0.4
+      ? "high"
+      : momentumDelta < 0
+        ? "medium"
+        : "low";
 
   const recencyTile: InsightTile = {
     title: "Recency Bias Trend",
@@ -286,7 +612,46 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
 
   const metrics = useMemo(() => calculateMetrics(trades), [trades]);
-  const insightTiles = useMemo(() => buildBehavioralInsights(trades, metrics), [trades, metrics]);
+  const insightTiles = useMemo(
+    () => buildBehavioralInsights(trades, metrics),
+    [trades, metrics],
+  );
+
+  const assetOptimizations = useMemo(() => {
+    try {
+      if (trades.length === 0) {
+        return [];
+      }
+      const assetMetricsMap = calculateAssetMetrics(trades);
+      return rankAssets(assetMetricsMap, metrics.profitLoss);
+    } catch (error) {
+      console.error("Error calculating asset optimizations:", error);
+      return [];
+    }
+  }, [trades, metrics.profitLoss]);
+
+  const hourAnalysis = useMemo(() => {
+    try {
+      if (trades.length === 0) {
+        return {
+          hourMetrics: [],
+          negativeExpectancyHours: [],
+          strongestHours: [],
+          earlySessionVolatility: false,
+        };
+      }
+      const hourMetrics = calculateHourMetrics(trades);
+      return analyzeHourPatterns(hourMetrics);
+    } catch (error) {
+      console.error("Error calculating hour analysis:", error);
+      return {
+        hourMetrics: [],
+        negativeExpectancyHours: [],
+        strongestHours: [],
+        earlySessionVolatility: false,
+      };
+    }
+  }, [trades]);
 
   const balanceSeries = useMemo(
     () =>
@@ -300,19 +665,28 @@ export default function App() {
     [trades],
   );
 
-  const fetchCsvPage = async (file: File, page: number): Promise<BackendPageResponse> => {
+  const fetchCsvPage = async (
+    file: File,
+    page: number,
+  ): Promise<BackendPageResponse> => {
     const formData = new FormData();
     formData.append("file", file);
 
-    const response = await fetch(`/api/data?page=${page}&per_page=${PAGE_SIZE}`, {
-      method: "POST",
-      body: formData,
-    });
+    const response = await fetch(
+      `/api/data?page=${page}&per_page=${PAGE_SIZE}`,
+      {
+        method: "POST",
+        body: formData,
+      },
+    );
 
-    const payload = (await response.json()) as BackendPageResponse | { error: string };
+    const payload = (await response.json()) as
+      | BackendPageResponse
+      | { error: string };
 
     if (!response.ok) {
-      const message = "error" in payload ? payload.error : "Failed to parse CSV.";
+      const message =
+        "error" in payload ? payload.error : "Failed to parse CSV.";
       throw new Error(message);
     }
 
@@ -325,7 +699,10 @@ export default function App() {
 
     try {
       const firstPage = await fetchCsvPage(file, 1);
-      const totalPages = Math.max(1, Math.ceil(firstPage.total / firstPage.per_page));
+      const totalPages = Math.max(
+        1,
+        Math.ceil(firstPage.total / firstPage.per_page),
+      );
       const allRows = [...firstPage.data];
 
       for (let page = 2; page <= totalPages; page += 1) {
@@ -337,7 +714,11 @@ export default function App() {
     } catch (err) {
       console.error(err);
       setTrades([]);
-      setError(err instanceof Error ? err.message : "Unexpected error while uploading CSV.");
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Unexpected error while uploading CSV.",
+      );
     } finally {
       setIsLoading(false);
     }
@@ -365,7 +746,9 @@ export default function App() {
             </div>
             <div>
               <h1 className="text-2xl font-bold">Trade Bias Detector</h1>
-              <p className="text-sm text-gray-500">Upload a CSV to analyze key performance metrics</p>
+              <p className="text-sm text-gray-500">
+                Upload a CSV to analyze key performance metrics
+              </p>
             </div>
           </div>
         </div>
@@ -386,14 +769,20 @@ export default function App() {
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7">
                 <Card>
                   <CardHeader className="pb-2">
-                    <CardTitle className="text-sm text-gray-500">Total Trades</CardTitle>
+                    <CardTitle className="text-sm text-gray-500">
+                      Total Trades
+                    </CardTitle>
                   </CardHeader>
-                  <CardContent className="text-2xl font-semibold">{metrics.totalTrades}</CardContent>
+                  <CardContent className="text-2xl font-semibold">
+                    {metrics.totalTrades}
+                  </CardContent>
                 </Card>
 
                 <Card>
                   <CardHeader className="pb-2">
-                    <CardTitle className="text-sm text-gray-500">Win Rate</CardTitle>
+                    <CardTitle className="text-sm text-gray-500">
+                      Win Rate
+                    </CardTitle>
                   </CardHeader>
                   <CardContent className="text-2xl font-semibold">
                     {condenseDisplayNumber(metrics.winRate, 1)}%
@@ -402,7 +791,9 @@ export default function App() {
 
                 <Card>
                   <CardHeader className="pb-2">
-                    <CardTitle className="text-sm text-gray-500">Avg Profit</CardTitle>
+                    <CardTitle className="text-sm text-gray-500">
+                      Avg Profit
+                    </CardTitle>
                   </CardHeader>
                   <CardContent className="text-2xl font-semibold text-green-600">
                     ${condenseDisplayNumber(metrics.avgProfit, 2)}
@@ -411,7 +802,9 @@ export default function App() {
 
                 <Card>
                   <CardHeader className="pb-2">
-                    <CardTitle className="text-sm text-gray-500">Avg Loss</CardTitle>
+                    <CardTitle className="text-sm text-gray-500">
+                      Avg Loss
+                    </CardTitle>
                   </CardHeader>
                   <CardContent className="text-2xl font-semibold text-red-600">
                     ${condenseDisplayNumber(metrics.avgLoss, 2)}
@@ -420,7 +813,9 @@ export default function App() {
 
                 <Card>
                   <CardHeader className="pb-2">
-                    <CardTitle className="text-sm text-gray-500">Point Factor</CardTitle>
+                    <CardTitle className="text-sm text-gray-500">
+                      Point Factor
+                    </CardTitle>
                   </CardHeader>
                   <CardContent className="text-2xl font-semibold">
                     {condenseDisplayNumber(metrics.pointFactor, 2)}
@@ -429,7 +824,9 @@ export default function App() {
 
                 <Card>
                   <CardHeader className="pb-2">
-                    <CardTitle className="text-sm text-gray-500">Profit/Loss</CardTitle>
+                    <CardTitle className="text-sm text-gray-500">
+                      Profit/Loss
+                    </CardTitle>
                   </CardHeader>
                   <CardContent
                     className={`text-2xl font-semibold ${metrics.profitLoss >= 0 ? "text-green-600" : "text-red-600"}`}
@@ -440,36 +837,84 @@ export default function App() {
 
                 <Card>
                   <CardHeader className="pb-2">
-                    <CardTitle className="text-sm text-gray-500">Current Balance</CardTitle>
+                    <CardTitle className="text-sm text-gray-500">
+                      Current Balance
+                    </CardTitle>
                   </CardHeader>
                   <CardContent className="text-2xl font-semibold">
-                    {metrics.currentBalance === null ? "-" : `$${condenseDisplayNumber(metrics.currentBalance, 2)}`}
+                    {metrics.currentBalance === null
+                      ? "-"
+                      : `$${condenseDisplayNumber(metrics.currentBalance, 2)}`}
                   </CardContent>
                 </Card>
               </div>
 
               <div className="space-y-3">
                 <div>
-                  <h2 className="text-xl font-semibold">Behavioral Finance Insights & Trends</h2>
-                  <p className="text-sm text-gray-500">Pattern alerts inferred from your trade outcomes and pacing</p>
+                  <h2 className="text-xl font-semibold">
+                    Behavioral Finance Insights & Trends
+                  </h2>
+                  <p className="text-sm text-gray-500">
+                    Pattern alerts inferred from your trade outcomes and pacing
+                  </p>
                 </div>
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
                   {insightTiles.map((tile) => (
                     <Card key={tile.title}>
                       <CardHeader className="pb-2">
-                        <CardTitle className="text-base">{tile.title}</CardTitle>
+                        <CardTitle className="text-base">
+                          {tile.title}
+                        </CardTitle>
                       </CardHeader>
                       <CardContent className="space-y-3">
-                        <div className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-medium ${getSeverityStyles(tile.severity)}`}>
+                        <div
+                          className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-medium ${getSeverityStyles(tile.severity)}`}
+                        >
                           {tile.severity.toUpperCase()}
                         </div>
-                        <p className="text-lg font-semibold text-gray-900">{tile.trend}</p>
-                        <p className="text-sm text-gray-600">{tile.description}</p>
+                        <p className="text-lg font-semibold text-gray-900">
+                          {tile.trend}
+                        </p>
+                        <p className="text-sm text-gray-600">
+                          {tile.description}
+                        </p>
                       </CardContent>
                     </Card>
                   ))}
                 </div>
               </div>
+
+              {assetOptimizations.length > 0 && (
+                <div className="space-y-3">
+                  <div>
+                    <h2 className="text-xl font-semibold">
+                      Portfolio Optimization
+                    </h2>
+                    <p className="text-sm text-gray-500">
+                      Asset-level performance analysis and optimization
+                      suggestions
+                    </p>
+                  </div>
+                  <AssetOptimizationComponent
+                    optimizations={assetOptimizations}
+                  />
+                </div>
+              )}
+
+              {hourAnalysis.hourMetrics.length > 0 &&
+                hourAnalysis.hourMetrics.some((hm) => hm.tradeCount > 0) && (
+                  <div className="space-y-3">
+                    <div>
+                      <h2 className="text-xl font-semibold">
+                        Trading Hour Analysis
+                      </h2>
+                      <p className="text-sm text-gray-500">
+                        Performance patterns by time of day
+                      </p>
+                    </div>
+                    <HourAnalysisComponent analysis={hourAnalysis} />
+                  </div>
+                )}
 
               <Card>
                 <CardHeader>
@@ -486,13 +931,25 @@ export default function App() {
                         <XAxis
                           dataKey="index"
                           tick={{ fontSize: 12 }}
-                          label={{ value: "Trades", position: "insideBottom", offset: -5 }}
+                          label={{
+                            value: "Trades",
+                            position: "insideBottom",
+                            offset: -5,
+                          }}
                         />
-                        <YAxis tick={{ fontSize: 12 }} domain={[yDomain[0], yDomain[1]]} />
+                        <YAxis
+                          tick={{ fontSize: 12 }}
+                          domain={[yDomain[0], yDomain[1]]}
+                        />
                         <Tooltip
-                          formatter={(value: number) => [`$${condenseDisplayNumber(Number(value), 2)}`, "Balance"]}
+                          formatter={(value: number) => [
+                            `$${condenseDisplayNumber(Number(value), 2)}`,
+                            "Balance",
+                          ]}
                           labelFormatter={(label) => {
-                            const point = balanceSeries.find((item) => item.index === Number(label));
+                            const point = balanceSeries.find(
+                              (item) => item.index === Number(label),
+                            );
                             return point ? point.label : `Trade ${label}`;
                           }}
                         />
